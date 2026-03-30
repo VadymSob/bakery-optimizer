@@ -1,0 +1,37 @@
+{
+  "products": {
+    "Батон": {
+      "weight_batch": 166,
+      "weight_unit": 0.46,
+      "mix_time": 270,
+      "form_time": 25,
+      "proof_time": 65,
+      "bake_time": 29,
+      "cool_time": 240,
+      "pack_rate": 11,
+      "line": 1
+    },
+    "Хліб Житній": {
+      "weight_batch": 166,
+      "weight_unit": 0.70,
+      "mix_time": 320,
+      "form_time": 30,
+      "proof_time": 50,
+      "bake_time": 45,
+      "cool_time": 300,
+      "pack_rate": 8,
+      "line": 2
+    },
+    "Булка здобна": {
+      "weight_batch": 166,
+      "weight_unit": 0.10,
+      "mix_time": 210,
+      "form_time": 45,
+      "proof_time": 40,
+      "bake_time": 15,
+      "cool_time": 120,
+      "pack_rate": 20,
+      "line": 1
+    }
+  }
+}
