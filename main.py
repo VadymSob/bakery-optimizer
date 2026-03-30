@@ -9,77 +9,105 @@ def load_config(file_path='config.json'):
 
 def calculate_schedule(order_plan, config, deadline_str="03:00"):
     products = config['products']
-    # Встановлюємо дедлайн на завтрашнє число
-    deadline = datetime.now().replace(hour=int(deadline_str[:2]), minute=int(deadline_str[3:]), second=0, microsecond=0) + timedelta(days=1)
+    # Дедлайн: 03:00 завтрашнього дня
+    target_date = datetime.now() + timedelta(days=1)
+    deadline = target_date.replace(hour=int(deadline_str[:2]), minute=int(deadline_str[3:]), second=0, microsecond=0)
     
     schedule_data = []
-    # Стан ліній (час, коли лінія звільняється для наступної діжі при русі НАЗАД)
-    line_busy_until = {1: deadline, 2: deadline}
+    
+    # Відстежуємо вільний час на лініях (рахуємо НАЗАД від дедлайну)
+    # line_available_at зберігає час, коли лінія має БУТИ ВІЛЬНОЮ, щоб встигнути до дедлайну
+    line_available_at = {1: deadline, 2: deadline}
 
-    # Обробляємо замовлення
-    for item in order_plan:
+    # Сортуємо замовлення за пріоритетом (найдовші процеси пакування першими)
+    # Житній та Батон мають низьку швидкість пакування, тому вони критичні
+    for item in sorted(order_plan, key=lambda x: products[x['name']]['pack_rate']):
         name = item['name']
         qty = item['qty']
         spec = products[name]
+        line_num = spec['line']
         
         units_per_chan = int(spec['weight_batch'] / spec['weight_unit'])
         num_batches = (qty // units_per_chan) + (1 if qty % units_per_chan > 0 else 0)
         
-        # Рахуємо кожну діжу окремо (від останньої до першої)
+        # Час тех. циклу ПІСЛЯ лінії (ферментація + випікання + охолодження)
+        post_line_fixed = spec['proof_time'] + spec['bake_time'] + spec['cool_time']
+        # Час пакування однієї діжі
+        pack_duration = units_per_chan / spec['pack_rate']
+
+        # Рахуємо кожну діжу цього продукту (від останньої до першої)
         for b in range(num_batches, 0, -1):
-            line_num = spec['line']
             
-            # Розрахунок тех. циклу ПІСЛЯ формування (хв)
-            # Ферментація + Випікання + Охолодження + Час на пакування всієї діжі
-            pack_duration = units_per_chan / spec['pack_rate']
-            post_form_time = spec['proof_time'] + spec['bake_time'] + spec['cool_time'] + pack_duration
+            # Ця діжа має ПОВНІСТЮ закінчити пакування до line_available_at[line_num]
+            finish_packing = line_available_at[line_num]
             
-            # Час КІНЦЯ формування на лінії
-            end_form = line_busy_until[line_num] - timedelta(minutes=0) # Можна додати тех.паузу між чанами
+            # Початок пакування цієї діжі
+            start_packing = finish_packing - timedelta(minutes=pack_duration)
+            
+            # Щоб почати пакувати вчасно, вона має вийти з лінії формування за (fixed_delay) хвилин до цього
+            end_form = start_packing - timedelta(minutes=post_line_fixed)
+            
+            # Самі процеси на лінії (формування)
             start_form = end_form - timedelta(minutes=spec['form_time'])
             
-            # Час бродіння (готове тісто має бути до початку формування)
+            # Готовність тіста (бродіння має закінчитись до початку формування)
             ready_dough = start_form
+            
+            # Старт замісу опари/закваски
             start_mix = ready_dough - timedelta(minutes=spec['mix_time'])
             
-            # Час завершення пакування (для графіка)
-            finish_all = end_form + timedelta(minutes=post_form_time)
-            
-            # Оновлюємо "хвіст" лінії для наступного (попереднього у часі) чану
-            line_busy_until[line_num] = start_form
+            # Оновлюємо поріг для наступної (попередньої в часі) діжі на цій лінії
+            # Наступна діжа має звільнити лінію до того, як ця її займе
+            line_available_at[line_num] = start_form
             
             schedule_data.append({
-                "Task": f"{name} (Чан {b})",
-                "Start": start_mix,
-                "Finish": finish_all,
-                "Mix_Start": start_mix,
-                "Form_Start": start_form,
-                "Form_End": end_form,
-                "Line": f"Лінія {line_num}",
-                "Product": name
+                "Продукт": name,
+                "Завдання": f"{name} (Чан {b})",
+                "Лінія": f"Лінія {line_num}",
+                "Старт замісу (Оператор)": start_mix,
+                "Готовність тіста": ready_dough,
+                "Початок формування": start_form,
+                "Кінець формування": end_form,
+                "Вихід з печі/Охолодження": end_form + timedelta(minutes=spec['proof_time'] + spec['bake_time']),
+                "Фініш пакування (Дедлайн)": finish_packing
             })
 
     return pd.DataFrame(schedule_data)
 
-# --- ЗАМОВЛЕННЯ НА ЗМІНУ ---
+# --- ВХІДНІ ДАНІ ДЛЯ РОЗРАХУНКУ ---
 current_order = [
     {"name": "Хліб Житній", "qty": 3000},
     {"name": "Батон", "qty": 4000},
     {"name": "Булка здобна", "qty": 10000}
 ]
 
-# Запуск логіки
-config = load_config()
-df = calculate_schedule(current_order, config)
+try:
+    config = load_config()
+    df = calculate_schedule(current_order, config)
 
-# 1. Зберігаємо в Excel
-excel_df = df[['Product', 'Task', 'Line', 'Mix_Start', 'Form_Start', 'Finish']].sort_values('Mix_Start')
-excel_df.to_excel("Schedule_Plan.xlsx", index=False)
+    # Сортуємо результат по черговості робіт для оператора
+    df = df.sort_values('Старт замісу (Оператор)')
 
-# 2. Створюємо графік Ганта
-fig = px.timeline(df, x_start="Start", x_end="Finish", y="Line", color="Product", 
-                  hover_data=["Task", "Form_Start"], title="Графік завантаження ліній виробництва")
-fig.update_yaxes(autorange="reversed")
-fig.write_html("gantt_chart.html")
+    # 1. Збереження в Excel
+    file_excel = "Schedule_Plan.xlsx"
+    df.to_excel(file_excel, index=False)
 
-print("Готово! Перевірте файли Schedule_Plan.xlsx та gantt_chart.html")
+    # 2. Створення інтерактивного графіка Ганта
+    # Відображаємо цикл від замісу до пакування
+    fig = px.timeline(df, 
+                      x_start="Старт замісу (Оператор)", 
+                      x_end="Фініш пакування (Дедлайн)", 
+                      y="Лінія", 
+                      color="Продукт",
+                      hover_data=["Завдання", "Початок формування"],
+                      title="Оптимізований графік виробництва (Дедлайн 03:00)")
+    
+    fig.update_yaxes(autorange="reversed")
+    fig.write_html("gantt_chart.html")
+
+    print("--- РОЗРАХУНОК ЗАВЕРШЕНО ---")
+    print(f"Файли '{file_excel}' та 'gantt_chart.html' оновлено.")
+    print(f"Найраніший початок роботи (точка старт): {df['Старт замісу (Оператор)'].min().strftime('%H:%M (%d.%m)')}")
+
+except Exception as e:
+    print(f"Помилка: {e}")
